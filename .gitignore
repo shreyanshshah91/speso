@@ -45,3 +45,11 @@ example
 # Downloaded build artifacts
 builds/
 
+
+# local builds (APKs are too big for GitHub)
+builds/
+*.apk
+*.aab
+
+# personal Claude Code settings
+.claude/settings.local.json
