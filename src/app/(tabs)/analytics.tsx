@@ -205,12 +205,14 @@ export default function AnalyticsScreen() {
             </View>
             <View style={styles.toggle}>
               <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: !percent }}
                 accessibilityLabel="Show amounts"
                 onPress={() => setPercent(false)}
                 style={[styles.toggleBtn, !percent && styles.toggleOn]}>
                 <Database size={19} color={percent ? C.text2 : '#fff'} />
               </Pressable>
-              <Pressable accessibilityLabel="Show savings rate" onPress={() => setPercent(true)} style={[styles.toggleBtn, percent && styles.toggleOn]}>
+              <Pressable accessibilityRole="button" accessibilityState={{ selected: percent }} accessibilityLabel="Show savings rate" onPress={() => setPercent(true)} style={[styles.toggleBtn, percent && styles.toggleOn]}>
                 <Percent size={19} color={percent ? '#fff' : C.text2} />
               </Pressable>
             </View>
@@ -238,7 +240,7 @@ export default function AnalyticsScreen() {
             <T variant="body" tone="secondary" style={{ fontSize: 17 }}>
               Recurring
             </T>
-            <Pressable onPress={() => router.push('/settings/recurring')} hitSlop={8}>
+            <Pressable onPress={() => router.push('/settings/recurring')} hitSlop={12} accessibilityRole="button" accessibilityLabel="Manage recurring transactions">
               <T variant="small" tone="teal">
                 Manage
               </T>
@@ -288,7 +290,7 @@ export default function AnalyticsScreen() {
             <T variant="body" tone="secondary" style={{ fontSize: 17 }}>
               Budgets this month
             </T>
-            <Pressable onPress={() => router.push('/budget-edit')} hitSlop={8}>
+            <Pressable onPress={() => router.push('/budget-edit')} hitSlop={12} accessibilityRole="button" accessibilityLabel={budget.hasAny ? 'Edit budget' : 'Create budget'}>
               <T variant="small" tone="teal">
                 {budget.hasAny ? 'Edit' : 'Create'}
               </T>

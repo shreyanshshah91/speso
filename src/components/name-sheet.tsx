@@ -42,7 +42,7 @@ export function NameSheet({ visible, onClose, value, suggestions, onChange }: Pr
       {suggestions.length > 0 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} keyboardShouldPersistTaps="always">
           {suggestions.map((s) => (
-            <Pressable key={s} style={styles.chip} onPress={() => done(s)}>
+            <Pressable key={s} style={styles.chip} onPress={() => done(s)} hitSlop={{ top: 6, bottom: 6 }} accessibilityRole="button" accessibilityLabel={`Use ${s}`}>
               <T variant="small" numberOfLines={1}>
                 {s}
               </T>

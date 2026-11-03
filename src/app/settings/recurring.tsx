@@ -70,7 +70,7 @@ export default function RecurringScreen() {
                     </T>
                   </View>
                   <Toggle value={r.active} onChange={(v) => setActive(r, v)} accessibilityLabel={r.active ? 'Pause' : 'Resume'} />
-                  <Pressable onPress={() => remove(r)} hitSlop={8} accessibilityLabel="Delete recurring rule" style={{ padding: 6 }}>
+                  <Pressable onPress={() => remove(r)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Delete recurring rule" style={{ padding: 6 }}>
                     <Trash2 size={20} color={C.red} />
                   </Pressable>
                 </View>

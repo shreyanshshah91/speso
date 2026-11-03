@@ -22,6 +22,7 @@ export function Segmented<V extends string>({ options, value, onChange, fill }: 
             key={o.value}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
+            hitSlop={{ top: 4, bottom: 4 }}
             onPress={() => {
               if (!active) haptic.select();
               onChange(o.value);

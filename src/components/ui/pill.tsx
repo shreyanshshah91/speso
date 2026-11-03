@@ -35,7 +35,7 @@ export function Pill({ label, icon, active, onClear, onPress, size = 'lg', acces
           {icon}
           {text}
         </PressableScale>
-        <Pressable onPress={onClear} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Clear ${label}`} style={styles.clear}>
+        <Pressable onPress={onClear} hitSlop={12} accessibilityRole="button" accessibilityLabel={`Clear ${label}`} style={styles.clear}>
           <X size={11} color="#1B2024" strokeWidth={3.4} />
         </Pressable>
       </View>
@@ -47,6 +47,7 @@ export function Pill({ label, icon, active, onClear, onPress, size = 'lg', acces
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
+      hitSlop={size === 'md' ? 6 : 3}
       style={[styles.pill, { height: h, paddingHorizontal: padX, width: label ? undefined : h }, active && styles.active]}>
       <View style={styles.row}>
         {icon}

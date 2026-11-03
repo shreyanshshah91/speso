@@ -10,7 +10,7 @@ export const C = {
 
   text: '#FFFFFF',
   text2: '#9AA1A7',
-  text3: '#6E767C',
+  text3: '#8A9298',
 
   card: 'rgba(255,255,255,0.07)',
   cardStrong: 'rgba(255,255,255,0.10)',

@@ -105,7 +105,7 @@ export function TransferSheet({ visible, onClose, transfer = null }: Props) {
         </T>
       ) : (
         <>
-          <Pressable style={styles.field} onPress={() => setPick('from')}>
+          <Pressable style={styles.field} onPress={() => setPick('from')} accessibilityRole="button" accessibilityLabel={`From: ${from?.name ?? 'none'}, change`}>
             <T variant="body" tone="secondary">
               From
             </T>
@@ -116,7 +116,7 @@ export function TransferSheet({ visible, onClose, transfer = null }: Props) {
           <View style={styles.arrow}>
             <ArrowDown size={18} color={C.text2} />
           </View>
-          <Pressable style={styles.field} onPress={() => setPick('to')}>
+          <Pressable style={styles.field} onPress={() => setPick('to')} accessibilityRole="button" accessibilityLabel={`To: ${to?.name ?? 'none'}, change`}>
             <T variant="body" tone="secondary">
               To
             </T>
