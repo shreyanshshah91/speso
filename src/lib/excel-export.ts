@@ -4,7 +4,7 @@ import { Platform } from 'react-native';
 
 import { APP_NAME } from '@/constants/app';
 import { downloadInBrowser } from '@/lib/download';
-import { buildXlsx, XLSX_MIME, type XlsxSheet } from '@/lib/xlsx';
+import { buildXlsx, XLSX_MIME, type XlsxColumn, type XlsxSheet } from '@/lib/xlsx';
 import { toHomeAmount, useData } from '@/store/data';
 import { usePrefs } from '@/store/prefs';
 import { accountMoves } from '@/lib/running-balance';
@@ -44,44 +44,61 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
   const { accounts, toHome } = useData.getState();
   const home = usePrefs.getState().homeCurrency;
-  const toHomeValue = (amount: number, code: string) => round2(toHomeAmount(toHome, amount, code));
   const accountName = new Map(accounts.map((a) => [a.id, a.name]));
   const { transactions, transfers } = entriesInRange(r);
 
   const account = r.accountId != null ? accounts.find((a) => a.id === r.accountId) : undefined;
+  // Every amount and balance is in one currency, like a bank statement: the account's own for a
+  // one-account export, the home currency otherwise.
+  const cur = account ? account.currencyCode : home;
 
-  const txRow = (t: TransactionWithCategory, balance: number) => {
-    const spread = t.spreadFrom && t.spreadTo ? `${t.spreadFrom} to ${t.spreadTo}` : t.spreadMonths > 1 ? `${t.spreadMonths} months` : null;
-    return [
-      t.date,
-      TYPE_LABEL[t.type],
-      t.categoryName,
-      t.note || null,
-      accountName.get(t.accountId) ?? null,
-      round2(t.amount),
-      t.currencyCode,
-      toHomeValue(t.amount, t.currencyCode),
-      round2(balance),
-      spread,
-    ];
+  interface Line {
+    date: string;
+    type: string;
+    category: string | null;
+    name: string | null;
+    account: string | null;
+    /** Signed effect in `cur`: negative = money out. */
+    effect: number;
+    balance: number;
+    /** "USD 50.00" when the entry was in another currency than `cur`. */
+    original: string | null;
+    spread: string | null;
+  }
+  const original = (amount: number, code: string) => (code === cur ? null : `${code} ${amount.toFixed(2)}`);
+  const txLine = (t: TransactionWithCategory, effect: number, balance: number): Line => ({
+    date: t.date,
+    type: TYPE_LABEL[t.type],
+    category: t.categoryName,
+    name: t.note || null,
+    account: accountName.get(t.accountId) ?? null,
+    effect,
+    balance,
+    original: original(t.amount, t.currencyCode),
+    spread: t.spreadFrom && t.spreadTo ? `${t.spreadFrom} to ${t.spreadTo}` : t.spreadMonths > 1 ? `${t.spreadMonths} months` : null,
+  });
+  // A transfer is two lines in an all-accounts export (out of one, into the other), so the in and
+  // out columns always add up to the change in balance.
+  const transferLine = (tr: AccountTransfer, out: boolean, effect: number, balance: number): Line => {
+    const other = accountName.get(out ? tr.toAccountId : tr.fromAccountId) ?? 'another account';
+    const label = out ? `To ${other}` : `From ${other}`;
+    return {
+      date: tr.date,
+      type: out ? 'Transfer out' : 'Transfer in',
+      category: null,
+      name: tr.note ? `${label} · ${tr.note}` : label,
+      account: accountName.get(out ? tr.fromAccountId : tr.toAccountId) ?? null,
+      effect,
+      balance,
+      original: original(tr.amount, tr.currencyCode),
+      spread: null,
+    };
   };
-  const transferRow = (tr: AccountTransfer, balance: number, type = 'Transfer') => [
-    tr.date,
-    type,
-    null,
-    tr.note || null,
-    `${accountName.get(tr.fromAccountId) ?? '?'} → ${accountName.get(tr.toAccountId) ?? '?'}`,
-    round2(tr.amount),
-    tr.currencyCode,
-    toHomeValue(tr.amount, tr.currencyCode),
-    round2(balance),
-    null,
-  ];
 
-  // "Balance" is what was left right after each row: that account's balance (in its currency) for
-  // a one-account export, or the total of every account (in the home currency) otherwise. Both
-  // count everything before the range too, so the first row continues from the real balance.
-  const rows: (string | number | null)[][] = [];
+  // "Balance" is what was left right after each line: that account's balance for a one-account
+  // export, or the total of every account otherwise. Both count everything before the range too,
+  // so the first line continues from the real balance.
+  const lines: Line[] = [];
   let opening = 0;
   let closing = 0;
   if (account) {
@@ -91,40 +108,61 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
     closing = opening;
     for (const m of moves) {
       if (!inRange(m.date, r)) continue;
-      rows.push(m.kind === 'tx' ? txRow(m.tx, m.balance) : transferRow(m.transfer, m.balance, m.out ? 'Transfer out' : 'Transfer in'));
+      lines.push(m.kind === 'tx' ? txLine(m.tx, m.effect, m.balance) : transferLine(m.transfer, m.out, m.effect, m.balance));
       closing = m.balance;
     }
   } else {
     const all = useData.getState();
     let total = accounts.reduce((sum, a) => sum + toHomeAmount(toHome, a.openingBalance, a.currencyCode), 0);
-    // Transfers move money between accounts, so they leave the total as it was.
     const moves = [
-      ...all.transactions.map((t) => ({
-        date: t.date,
-        kind: 0,
-        id: t.id,
-        t,
-        tr: null,
-      })),
-      ...all.transfers.map((tr) => ({
-        date: tr.date,
-        kind: 1,
-        id: tr.id,
-        t: null,
-        tr,
-      })),
+      ...all.transactions.map((t) => ({ date: t.date, kind: 0, id: t.id, t, tr: null })),
+      ...all.transfers.map((tr) => ({ date: tr.date, kind: 1, id: tr.id, t: null, tr })),
     ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.kind - b.kind || a.id - b.id));
     opening = total;
     for (const m of moves) {
-      if (m.t && accountName.has(m.t.accountId)) total += (m.t.type === 'income' ? 1 : -1) * toHomeAmount(toHome, m.t.amount, m.t.currencyCode);
+      const effect = m.t && accountName.has(m.t.accountId) ? (m.t.type === 'income' ? 1 : -1) * toHomeAmount(toHome, m.t.amount, m.t.currencyCode) : 0;
+      total += effect;
       if (r.from && m.date < r.from) opening = total;
       if (!inRange(m.date, r)) continue;
-      rows.push(m.t ? txRow(m.t, total) : transferRow(m.tr!, total));
+      if (m.t) lines.push(txLine(m.t, effect, total));
+      else if (m.tr) {
+        // Transfers move money between accounts, so they leave the total as it was.
+        const v = toHomeAmount(toHome, m.tr.amount, m.tr.currencyCode);
+        lines.push(transferLine(m.tr, true, -v, total), transferLine(m.tr, false, v, total));
+      }
       closing = total;
     }
-    if (rows.length === 0) closing = opening;
+    if (lines.length === 0) closing = opening;
   }
-  const balanceCurrency = account ? account.currencyCode : home;
+
+  // Optional columns only appear when they'd say something.
+  const showAccount = !account;
+  const showOriginal = lines.some((l) => l.original);
+  const showSpread = lines.some((l) => l.spread);
+  const columns: XlsxColumn[] = [
+    { header: 'Date', type: 'date', width: 12 },
+    { header: 'Type', width: 12 },
+    { header: 'Category', width: 20 },
+    { header: 'Name', width: 30 },
+    ...(showAccount ? [{ header: 'Account', width: 20 }] : []),
+    { header: `Money out (${cur})`, type: 'money', width: 16 },
+    { header: `Money in (${cur})`, type: 'money', width: 16 },
+    { header: account ? `Balance (${cur})` : `Total balance (${cur})`, type: 'money', width: 18 },
+    ...(showOriginal ? [{ header: 'Original amount', width: 16 }] : []),
+    ...(showSpread ? [{ header: 'Spread', width: 24 }] : []),
+  ];
+  const rows = lines.map((l) => [
+    l.date,
+    l.type,
+    l.category,
+    l.name,
+    ...(showAccount ? [l.account] : []),
+    l.effect < 0 ? round2(-l.effect) : null,
+    l.effect > 0 ? round2(l.effect) : null,
+    round2(l.balance),
+    ...(showOriginal ? [l.original] : []),
+    ...(showSpread ? [l.spread] : []),
+  ]);
 
   // Totals by category, in the home currency.
   const byCategory = new Map<string, { name: string; type: 'expense' | 'income'; count: number; total: number }>();
@@ -157,22 +195,7 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
     sheets: [
       {
         name: 'Transactions',
-        columns: [
-          { header: 'Date', type: 'date', width: 12 },
-          { header: 'Type', width: 10 },
-          { header: 'Category', width: 20 },
-          { header: 'Name', width: 30 },
-          { header: 'Account', width: 22 },
-          { header: 'Amount', type: 'money', width: 13 },
-          { header: 'Currency', width: 9 },
-          { header: `Amount (${home})`, type: 'money', width: 15 },
-          {
-            header: account ? `Balance (${balanceCurrency})` : `Total balance (${home})`,
-            type: 'money',
-            width: 18,
-          },
-          { header: 'Spread', width: 24 },
-        ],
+        columns,
         rows,
       },
       {
@@ -184,8 +207,8 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
           ['Income', round2(income)],
           ['Expenses', round2(expenses)],
           ['Left', round2(income - expenses)],
-          [`Opening balance (${balanceCurrency})`, round2(opening)],
-          [`Closing balance (${balanceCurrency})`, round2(closing)],
+          [`Opening balance (${cur})`, round2(opening)],
+          [`Closing balance (${cur})`, round2(closing)],
         ],
         columns: [
           { header: 'Category', width: 24 },
