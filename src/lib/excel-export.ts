@@ -7,6 +7,7 @@ import { downloadInBrowser } from '@/lib/download';
 import { buildXlsx, XLSX_MIME, type XlsxSheet } from '@/lib/xlsx';
 import { toHomeAmount, useData } from '@/store/data';
 import { usePrefs } from '@/store/prefs';
+import { accountMoves } from '@/lib/running-balance';
 import type { AccountTransfer, TransactionWithCategory } from '@/types';
 
 /** The dates to export (inclusive, yyyy-MM-dd); null ends mean "from the start" / "to today". */
@@ -17,17 +18,23 @@ export interface ExportRange {
   label: string;
   /** For the file name: "2026-09", "2026", "2026-08-27_2026-11-22", "all-time". */
   fileLabel: string;
+  /** Only this account's transactions and transfers (null = every account). */
+  accountId?: number | null;
 }
 
 const inRange = (date: string, r: ExportRange) => (!r.from || date >= r.from) && (!r.to || date <= r.to);
 
 /** Transactions (real entries, not spread shares) and transfers in the range, oldest first. */
-export function entriesInRange(r: ExportRange): { transactions: TransactionWithCategory[]; transfers: AccountTransfer[] } {
+export function entriesInRange(r: ExportRange): {
+  transactions: TransactionWithCategory[];
+  transfers: AccountTransfer[];
+} {
   const { transactions, transfers } = useData.getState();
+  const id = r.accountId ?? null;
   const byDate = <T extends { date: string; id: number }>(a: T, b: T) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.id - b.id);
   return {
-    transactions: transactions.filter((t) => inRange(t.date, r)).sort(byDate),
-    transfers: transfers.filter((t) => inRange(t.date, r)).sort(byDate),
+    transactions: transactions.filter((t) => inRange(t.date, r) && (id === null || t.accountId === id)).sort(byDate),
+    transfers: transfers.filter((t) => inRange(t.date, r) && (id === null || t.fromAccountId === id || t.toAccountId === id)).sort(byDate),
   };
 }
 
@@ -41,11 +48,11 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
   const accountName = new Map(accounts.map((a) => [a.id, a.name]));
   const { transactions, transfers } = entriesInRange(r);
 
-  const rows: (string | number | null)[][] = [];
-  for (const t of transactions) {
-    const spread =
-      t.spreadFrom && t.spreadTo ? `${t.spreadFrom} to ${t.spreadTo}` : t.spreadMonths > 1 ? `${t.spreadMonths} months` : null;
-    rows.push([
+  const account = r.accountId != null ? accounts.find((a) => a.id === r.accountId) : undefined;
+
+  const txRow = (t: TransactionWithCategory, balance: number) => {
+    const spread = t.spreadFrom && t.spreadTo ? `${t.spreadFrom} to ${t.spreadTo}` : t.spreadMonths > 1 ? `${t.spreadMonths} months` : null;
+    return [
       t.date,
       TYPE_LABEL[t.type],
       t.categoryName,
@@ -54,23 +61,70 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
       round2(t.amount),
       t.currencyCode,
       toHomeValue(t.amount, t.currencyCode),
+      round2(balance),
       spread,
-    ]);
+    ];
+  };
+  const transferRow = (tr: AccountTransfer, balance: number, type = 'Transfer') => [
+    tr.date,
+    type,
+    null,
+    tr.note || null,
+    `${accountName.get(tr.fromAccountId) ?? '?'} → ${accountName.get(tr.toAccountId) ?? '?'}`,
+    round2(tr.amount),
+    tr.currencyCode,
+    toHomeValue(tr.amount, tr.currencyCode),
+    round2(balance),
+    null,
+  ];
+
+  // "Balance" is what was left right after each row: that account's balance (in its currency) for
+  // a one-account export, or the total of every account (in the home currency) otherwise. Both
+  // count everything before the range too, so the first row continues from the real balance.
+  const rows: (string | number | null)[][] = [];
+  let opening = 0;
+  let closing = 0;
+  if (account) {
+    const moves = accountMoves(account, useData.getState().transactions, useData.getState().transfers, toHome);
+    const before = moves.filter((m) => r.from && m.date < r.from);
+    opening = before.length ? before[before.length - 1].balance : account.openingBalance;
+    closing = opening;
+    for (const m of moves) {
+      if (!inRange(m.date, r)) continue;
+      rows.push(m.kind === 'tx' ? txRow(m.tx, m.balance) : transferRow(m.transfer, m.balance, m.out ? 'Transfer out' : 'Transfer in'));
+      closing = m.balance;
+    }
+  } else {
+    const all = useData.getState();
+    let total = accounts.reduce((sum, a) => sum + toHomeAmount(toHome, a.openingBalance, a.currencyCode), 0);
+    // Transfers move money between accounts, so they leave the total as it was.
+    const moves = [
+      ...all.transactions.map((t) => ({
+        date: t.date,
+        kind: 0,
+        id: t.id,
+        t,
+        tr: null,
+      })),
+      ...all.transfers.map((tr) => ({
+        date: tr.date,
+        kind: 1,
+        id: tr.id,
+        t: null,
+        tr,
+      })),
+    ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.kind - b.kind || a.id - b.id));
+    opening = total;
+    for (const m of moves) {
+      if (m.t && accountName.has(m.t.accountId)) total += (m.t.type === 'income' ? 1 : -1) * toHomeAmount(toHome, m.t.amount, m.t.currencyCode);
+      if (r.from && m.date < r.from) opening = total;
+      if (!inRange(m.date, r)) continue;
+      rows.push(m.t ? txRow(m.t, total) : transferRow(m.tr!, total));
+      closing = total;
+    }
+    if (rows.length === 0) closing = opening;
   }
-  for (const tr of transfers) {
-    rows.push([
-      tr.date,
-      'Transfer',
-      null,
-      tr.note || null,
-      `${accountName.get(tr.fromAccountId) ?? '?'} → ${accountName.get(tr.toAccountId) ?? '?'}`,
-      round2(tr.amount),
-      tr.currencyCode,
-      toHomeValue(tr.amount, tr.currencyCode),
-      null,
-    ]);
-  }
-  rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const balanceCurrency = account ? account.currencyCode : home;
 
   // Totals by category, in the home currency.
   const byCategory = new Map<string, { name: string; type: 'expense' | 'income'; count: number; total: number }>();
@@ -81,7 +135,12 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
     if (t.type === 'income') income += v;
     else expenses += v;
     const key = `${t.type}:${t.categoryId}`;
-    const c = byCategory.get(key) ?? { name: t.categoryName, type: t.type, count: 0, total: 0 };
+    const c = byCategory.get(key) ?? {
+      name: t.categoryName,
+      type: t.type,
+      count: 0,
+      total: 0,
+    };
     c.count += 1;
     c.total += v;
     byCategory.set(key, c);
@@ -107,6 +166,11 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
           { header: 'Amount', type: 'money', width: 13 },
           { header: 'Currency', width: 9 },
           { header: `Amount (${home})`, type: 'money', width: 15 },
+          {
+            header: account ? `Balance (${balanceCurrency})` : `Total balance (${home})`,
+            type: 'money',
+            width: 18,
+          },
           { header: 'Spread', width: 24 },
         ],
         rows,
@@ -115,10 +179,13 @@ function buildWorkbook(r: ExportRange): { sheets: XlsxSheet[]; count: number } {
         name: 'Summary',
         preface: [
           ['Period', r.label],
+          ['Account', account ? account.name : 'All accounts'],
           ['Currency', home],
           ['Income', round2(income)],
           ['Expenses', round2(expenses)],
           ['Left', round2(income - expenses)],
+          [`Opening balance (${balanceCurrency})`, round2(opening)],
+          [`Closing balance (${balanceCurrency})`, round2(closing)],
         ],
         columns: [
           { header: 'Category', width: 24 },
@@ -141,7 +208,14 @@ export async function exportExcel(r: ExportRange): Promise<'exported' | 'empty'>
   const { sheets, count } = buildWorkbook(r);
   if (count === 0) return 'empty';
   const bytes = buildXlsx(sheets);
-  const name = `${APP_NAME.toLowerCase()}-${r.fileLabel}.xlsx`;
+  const account = r.accountId != null ? useData.getState().accounts.find((a) => a.id === r.accountId) : undefined;
+  const slug = account
+    ? account.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+    : '';
+  const name = `${APP_NAME.toLowerCase()}-${slug ? `${slug}-` : ''}${r.fileLabel}.xlsx`;
   if (Platform.OS === 'web') {
     downloadInBrowser(name, bytes, XLSX_MIME);
     return 'exported';
@@ -151,7 +225,11 @@ export async function exportExcel(r: ExportRange): Promise<'exported' | 'empty'>
     if (file.exists) file.delete();
     file.write(bytes);
     if (!(await Sharing.isAvailableAsync())) throw new Error('Sharing is not available on this device.');
-    await Sharing.shareAsync(file.uri, { mimeType: XLSX_MIME, dialogTitle: 'Export to Excel', UTI: 'org.openxmlformats.spreadsheetml.sheet' });
+    await Sharing.shareAsync(file.uri, {
+      mimeType: XLSX_MIME,
+      dialogTitle: 'Export to Excel',
+      UTI: 'org.openxmlformats.spreadsheetml.sheet',
+    });
   } finally {
     try {
       if (file.exists) file.delete();

@@ -1,10 +1,11 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ChevronLeft, Pencil } from 'lucide-react-native';
+import { ChevronLeft, FileSpreadsheet, Pencil } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { SectionList, StyleSheet, View } from 'react-native';
 
 import { AccountSheet } from '@/components/account-sheet';
 import { Empty } from '@/components/empty';
+import { ExportSheet } from '@/components/export-sheet';
 import { AddFab } from '@/components/fab';
 import { TransferSheet } from '@/components/transfer-sheet';
 import { TxRow } from '@/components/tx-row';
@@ -15,6 +16,7 @@ import { useAccountBalances } from '@/hooks/balances';
 import { useMoney } from '@/hooks/ledger';
 import { useTabBarInsets } from '@/hooks/tab-bar';
 import { formatDayHeader } from '@/lib/format';
+import { accountMoves } from '@/lib/running-balance';
 import { useData } from '@/store/data';
 import type { AccountTransfer } from '@/types';
 
@@ -40,6 +42,8 @@ interface Section {
   key: string;
   title: string;
   total: number;
+  /** The account's balance at the end of the day. */
+  balance: number;
   data: Entry[];
 }
 
@@ -58,6 +62,7 @@ export default function AccountScreen() {
   const loaded = useData((s) => s.loaded);
   const { balances } = useAccountBalances();
   const [editing, setEditing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [editTransfer, setEditTransfer] = useState<AccountTransfer | null>(null);
   // Show the header and balance straight away and fill in the list just after, so the page slides
   // in without waiting for every row to render.
@@ -77,54 +82,57 @@ export default function AccountScreen() {
 
   const sections = useMemo<Section[]>(() => {
     if (!account) return [];
-    const rate = (code: string) => toHome[code] ?? 1;
-    const toAccount = (amount: number, code: string) => (code === account.currencyCode ? amount : (amount * rate(code)) / rate(account.currencyCode));
     const names = new Map(accounts.map((a) => [a.id, a.name]));
-    const entries: Entry[] = [];
-
     // Real entries (not monthly shares): an account shows money on the day it moved.
-    for (const t of transactions) {
-      if (t.accountId !== account.id) continue;
-      const income = t.type === 'income';
-      entries.push({
-        key: `t${t.id}`,
-        date: t.date,
-        icon: t.categoryIcon,
-        title: t.note || t.categoryName,
-        amount: t.amount,
-        currency: t.currencyCode,
-        effect: (income ? 1 : -1) * toAccount(t.amount, t.currencyCode),
-        tone: income ? 'green' : 'primary',
-        sign: income ? '+' : '',
-        txId: t.id,
-        recurring: t.recurringRuleId !== null,
-      });
-    }
-    for (const tr of transfers) {
-      const out = tr.fromAccountId === account.id;
-      if (!out && tr.toAccountId !== account.id) continue;
-      const other = names.get(out ? tr.toAccountId : tr.fromAccountId) ?? 'another account';
-      entries.push({
-        key: `x${tr.id}`,
-        date: tr.date,
-        icon: '↔️',
-        title: out ? `To ${other}` : `From ${other}`,
-        subtitle: tr.note || 'Transfer',
-        amount: tr.amount,
-        currency: tr.currencyCode,
-        effect: (out ? -1 : 1) * toAccount(tr.amount, tr.currencyCode),
-        tone: 'secondary',
-        sign: out ? '−' : '+',
-        transfer: tr,
-      });
-    }
-
-    entries.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.key.localeCompare(a.key)));
+    const moves = accountMoves(account, transactions, transfers, toHome);
     const byDay = new Map<string, Section>();
-    for (const e of entries) {
+    // Newest first: walking back, the first entry seen on a day is its last, so its balance is
+    // the day's closing balance.
+    for (let i = moves.length - 1; i >= 0; i--) {
+      const m = moves[i];
+      let e: Entry;
+      if (m.kind === 'tx') {
+        const t = m.tx;
+        const income = t.type === 'income';
+        e = {
+          key: `t${t.id}`,
+          date: t.date,
+          icon: t.categoryIcon,
+          title: t.note || t.categoryName,
+          amount: t.amount,
+          currency: t.currencyCode,
+          effect: m.effect,
+          tone: income ? 'green' : 'primary',
+          sign: income ? '+' : '',
+          txId: t.id,
+          recurring: t.recurringRuleId !== null,
+        };
+      } else {
+        const tr = m.transfer;
+        const other = names.get(m.out ? tr.toAccountId : tr.fromAccountId) ?? 'another account';
+        e = {
+          key: `x${tr.id}`,
+          date: tr.date,
+          icon: '↔️',
+          title: m.out ? `To ${other}` : `From ${other}`,
+          subtitle: tr.note || 'Transfer',
+          amount: tr.amount,
+          currency: tr.currencyCode,
+          effect: m.effect,
+          tone: 'secondary',
+          sign: m.out ? '−' : '+',
+          transfer: tr,
+        };
+      }
       let s = byDay.get(e.date);
       if (!s) {
-        s = { key: e.date, title: formatDayHeader(e.date), total: 0, data: [] };
+        s = {
+          key: e.date,
+          title: formatDayHeader(e.date),
+          total: 0,
+          balance: m.balance,
+          data: [],
+        };
         byDay.set(e.date, s);
       }
       s.total += e.effect;
@@ -146,6 +154,9 @@ export default function AccountScreen() {
         <T variant="heading" center numberOfLines={1} style={styles.title}>
           {account.icon} {account.name}
         </T>
+        <IconButton accessibilityLabel="Export to Excel" onPress={() => setExporting(true)} size={46} solid="rgba(80,88,94,0.6)">
+          <FileSpreadsheet size={19} color="#fff" />
+        </IconButton>
         <IconButton accessibilityLabel="Edit account" onPress={() => setEditing(true)} size={46} solid="rgba(80,88,94,0.6)">
           <Pencil size={19} color="#fff" />
         </IconButton>
@@ -172,11 +183,17 @@ export default function AccountScreen() {
         }
         renderSectionHeader={({ section }) => (
           <View style={styles.dayHeader}>
-            <T variant="body" tone="secondary" style={styles.dayHeaderText}>
-              {section.title}
-            </T>
-            <T variant="body" tone="secondary" style={styles.dayHeaderText}>
-              {money(section.total, account.currencyCode, { signed: true })}
+            <View style={styles.dayHeaderRow}>
+              <T variant="body" tone="secondary" style={styles.dayHeaderText}>
+                {section.title}
+              </T>
+              <T variant="body" tone="secondary" style={styles.dayHeaderText}>
+                {money(section.total, account.currencyCode, { signed: true })}
+              </T>
+            </View>
+            <T variant="caption" tone="tertiary" numberOfLines={1}>
+              {/* Always with cents, so it can be matched against a bank statement. */}
+              Balance {money(section.balance, account.currencyCode, { forceCents: true })}
             </T>
           </View>
         )}
@@ -190,29 +207,37 @@ export default function AccountScreen() {
             recurring={item.recurring}
             first={index === 0}
             last={index === section.data.length - 1}
-            onPress={
-              item.txId !== undefined
-                ? () => router.push(`/transaction/${item.txId}`)
-                : item.transfer
-                  ? () => setEditTransfer(item.transfer ?? null)
-                  : undefined
-            }
+            onPress={item.txId !== undefined ? () => router.push(`/transaction/${item.txId}`) : item.transfer ? () => setEditTransfer(item.transfer ?? null) : undefined}
           />
         )}
         ListEmptyComponent={ready ? <Empty emoji="🏦" title="No transactions yet" message="Entries you add to this account show up here." /> : null}
       />
       <AddFab href={`/transaction/new?accountId=${account.id}`} />
       <TransferSheet visible={editTransfer !== null} transfer={editTransfer} onClose={() => setEditTransfer(null)} />
+      <ExportSheet visible={exporting} accountId={account.id} onClose={() => setExporting(false)} />
       <AccountSheet visible={editing} account={account} onClose={() => setEditing(false)} onDeleted={goBack} />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  topBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 4 },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 4,
+  },
   title: { flex: 1 },
   header: { alignItems: 'center', marginTop: 14, marginBottom: 18 },
   hero: { fontSize: 42, lineHeight: 50, maxWidth: '90%' },
-  dayHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 10 },
+  dayHeader: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 10,
+    gap: 2,
+  },
+  dayHeaderRow: { flexDirection: 'row', justifyContent: 'space-between' },
   dayHeaderText: { fontSize: 16 },
 });
