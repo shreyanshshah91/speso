@@ -4,10 +4,6 @@ A private, offline-first expense and income tracker for iOS and Android, built w
 React Native. Dark "glass" UI, fast keypad entry, and every feature unlocked — no accounts, no
 subscriptions, no server.
 
-Built by one person who isn't a full-time software engineer, working with
-[Claude Code](https://claude.com/claude-code) as the coding assistant. See
-[How it was built](#how-it-was-built).
-
 ## Features
 
 - **Activity** — daily spend chart with average line, day-grouped list, search, long-press to
@@ -104,14 +100,3 @@ npx eas-cli@latest update --channel preview --platform android --message "Fix �
 - `modules/drive-save/` — local Expo native module (Kotlin) that hands a backup file to Android's
   "save document" picker so it can go straight to Google Drive.
 - `plugins/` — config plugins (Android Auto Backup rules).
-
-## How it was built
-
-Speso was designed and built with [Claude Code](https://claude.com/claude-code). I described
-features and reported bugs, usually with screenshots from my own Android phone, and Claude Code
-wrote and changed the code, ran lint and type checks, tested in a web preview and produced the
-EAS builds. I installed each APK, tried it on the phone and sent back what was wrong.
-
-[`CLAUDE.md`](CLAUDE.md) holds the project notes Claude Code reads at the start of every session:
-build and release steps, UI rules for small screens, and Android pitfalls found along the way
-(keyboard handling, cursor jumps in sheets, drawing-order bugs, slow pure-JS crypto under Hermes).

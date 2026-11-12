@@ -50,6 +50,3 @@ builds/
 builds/
 *.apk
 *.aab
-
-# personal Claude Code settings
-.claude/settings.local.json
